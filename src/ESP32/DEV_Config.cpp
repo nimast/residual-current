@@ -71,8 +71,11 @@ UBYTE DEV_Module_Init(void)
 	//serial printf
 	Serial.begin(115200);
 
-	// For ESP32-S3-Nano, we'll use software SPI as configured in DEV_SPI_WriteByte
-	// No need to initialize hardware SPI
+	// spi
+	// SPI.setDataMode(SPI_MODE0);
+	// SPI.setBitOrder(MSBFIRST);
+	// SPI.setClockDivider(SPI_CLOCK_DIV4);
+	// SPI.begin();
 
 	return 0;
 }

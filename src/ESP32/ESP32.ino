@@ -3,21 +3,6 @@
 #include "fonts.h"
 #include "ImageData.h"
 
-/* Pin connections for ESP32-S3-Nano to 13.3inch e-Paper HAT+:
- * e-Paper HAT+ Pin | ESP32-S3-Nano Pin
- * -------------------------------------
- * BUSY             | D9
- * RST              | D10
- * DC               | D11
- * CS-S             | D12
- * MOSI             | D13
- * CLK              | D14
- * CS-M             | D15
- * PWR              | D8
- * GND              | GND
- * 3.3V             | 3.3V
- */
-
 void setup() {
     Debug("EPD_13IN3E_test Demo\r\n");
     DEV_Module_Init();
