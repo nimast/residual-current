@@ -6,14 +6,14 @@
 /* Pin connections for ESP32-S3-Nano to 13.3inch e-Paper HAT+:
  * e-Paper HAT+ Pin | ESP32-S3-Nano Pin
  * -------------------------------------
- * BUSY             | D9
- * RST              | D10
- * DC               | D11
- * CS-S             | D12
- * MOSI             | D13
- * CLK              | D14
- * CS-M             | D15
- * PWR              | D8
+ * BUSY             | D6
+ * RST              | D8
+ * DC               | D7
+ * CS-S             | D9
+ * MOSI             | D11
+ * CLK              | D13
+ * CS-M             | D10
+ * PWR              | D5
  * GND              | GND
  * 3.3V             | 3.3V
  */
@@ -42,7 +42,7 @@ void setup() {
     Paint_SelectImage(Image);
     Paint_Clear(WHITE);
 
-#if 1 // show bmp
+#if 0 // show bmp
     printf("show bmp1-----------------\r\n");
     EPD_13IN3E_DisplayPart(BMP_1, 400, 500, 400, 600);
     DEV_Delay_ms(3000);
