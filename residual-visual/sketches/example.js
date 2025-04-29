@@ -46,8 +46,10 @@ function setup() {
   noFill();
   textSize(10);
   
-  // Initialize with a random seed
-  seed = floor(random(10000));
+  // Initialize with seed from URL if provided, otherwise random
+  seed = typeof window.initialSeed === 'number' ? window.initialSeed : floor(random(10000));
+  console.log(`[Sketch] Using seed: ${seed}`); // Log the seed being used
+  
   initializeMode();
 }
 
@@ -71,8 +73,10 @@ function draw() {
   fill(0);
   noStroke();
   textSize(14);
-  text(`MODE: ${MODES[currentMode]}`, 20, 30);
-  text(`SEED: ${seed}`, 20, 50);
+  console.log(MODES[currentMode]);
+  console.log(seed);
+  // text(`MODE: ${MODES[currentMode]}`, 20, 30);
+  // text(`SEED: ${seed}`, 20, 50);
   textSize(10);
   
   noLoop(); // Static image - no animation needed
@@ -483,30 +487,43 @@ function drawNetworkMode() {
 
 // ===== COMBINATORIAL MODE =====
 
+// Helper function to shuffle an array (Fisher-Yates)
+function shuffleArray(array) {
+  for (let i = array.length - 1; i > 0; i--) {
+    const j = floor(random() * (i + 1));
+    [array[i], array[j]] = [array[j], array[i]];
+  }
+  return array;
+}
+
 function initializeCombinatorial() {
   // Create two sets of items to connect
   const leftSide = [];
   const rightSide = [];
   
-  const numLeftItems = floor(random(8, 15));
-  const numRightItems = floor(random(5, 10));
+  const numLeftItems = floor(random(8, min(15, GEO_TERMS.length))); // Ensure we don't request more than available
+  const numRightItems = floor(random(5, min(10, MEDIA_TERMS.length))); // Ensure we don't request more than available
   
-  // Create left side items
+  // Shuffle the term lists to get unique random items
+  const shuffledGeoTerms = shuffleArray([...GEO_TERMS]);
+  const shuffledMediaTerms = shuffleArray([...MEDIA_TERMS]);
+
+  // Create left side items with unique labels
   for (let i = 0; i < numLeftItems; i++) {
     leftSide.push({
       x: width * 0.15,
-      y: map(i, 0, numLeftItems-1, height * 0.15, height * 0.85),
-      label: random(GEO_TERMS),
+      y: map(i, 0, numLeftItems - 1, height * 0.15, height * 0.85),
+      label: shuffledGeoTerms[i % shuffledGeoTerms.length], // Use shuffled list
       index: i
     });
   }
   
-  // Create right side items
+  // Create right side items with unique labels
   for (let i = 0; i < numRightItems; i++) {
     rightSide.push({
       x: width * 0.85,
-      y: map(i, 0, numRightItems-1, height * 0.2, height * 0.8),
-      label: random(MEDIA_TERMS),
+      y: map(i, 0, numRightItems - 1, height * 0.2, height * 0.8),
+      label: shuffledMediaTerms[i % shuffledMediaTerms.length], // Use shuffled list
       index: i + numLeftItems
     });
   }
@@ -548,7 +565,7 @@ function initializeCombinatorial() {
   
   // Add section labels
   labels.push({
-    x: width * 0.15,
+    x: width * 0.17,
     y: height * 0.1,
     text: "TERRESTRIAL STRATA",
     size: 12,
@@ -564,14 +581,14 @@ function initializeCombinatorial() {
   });
   
   // Add some descriptive text
-  labels.push({
-    x: width * 0.5,
-    y: height * 0.95,
-    text: "Showing hidden connections between geological formations and media operations",
-    size: 10,
-    rotation: 0,
-    isBottom: true
-  });
+  // labels.push({
+  //   x: width * 0.5,
+  //   y: height * 0.95,
+  //   text: "Showing hidden connections between geological formations and media operations",
+  //   size: 10,
+  //   rotation: 0,
+  //   isBottom: true
+  // });
 }
 
 function drawCombinatorialMode() {
@@ -587,18 +604,19 @@ function drawCombinatorialMode() {
   // Draw inner decorative frame
   stroke(0);
   strokeWeight(1);
+  noFill(); // Ensure frame is not filled
   rect(width * 0.05, height * 0.05, width * 0.9, height * 0.9);
   
-  // Draw connections between nodes
+  // --- Draw connections between nodes ---
+  stroke(0); // Set stroke color for lines (already semi-transparent black)
+  noFill(); // Ensure lines are not filled
   for (const conn of combinations) {
     const start = nodes[conn.startNode];
     const end = nodes[conn.endNode];
     
-    stroke(0, 150);
-    strokeWeight(conn.weight);
+    strokeWeight(conn.weight); // Use connection weight for stroke width
     
     // Draw curved or straight line
-    noFill();
     if (conn.controlY) {
       beginShape();
       vertex(start.x, start.y);
@@ -609,49 +627,55 @@ function drawCombinatorialMode() {
     }
   }
   
-  // Draw nodes
+  // --- Draw nodes (just the small marker) ---
+  // Keep these filled as simple markers
+  fill(0);
+  noStroke();
   for (const node of nodes) {
-    // Draw node marker
-    fill(0);
-    noStroke();
     ellipse(node.x, node.y, 5, 5);
-    
-    // Draw node label
-    textAlign(node.x < width/2 ? RIGHT : LEFT);
-    textSize(10);
-    text(node.label, node.x + (node.x < width/2 ? -10 : 10), node.y + 4);
   }
   
-  // Draw title and labels
+  // --- Draw node labels (outline only) ---
+  noFill(); // <<< NO FILL for text
+  stroke(0); // <<< Black stroke for text outline
+  strokeWeight(0.5); // <<< Thin stroke weight for text outline
+  textSize(10);
+  for (const node of nodes) {
+    textAlign(node.x < width/2 ? RIGHT : LEFT);
+    text(node.label, node.x + (node.x < width/2 ? -10 : 10), node.y + 4);
+  }
+  textAlign(CENTER); // Reset alignment for titles/other labels
+  
+  // --- Draw title and section labels (outline only) ---
+  // Styles are already set (noFill, stroke, strokeWeight)
   for (const label of labels) {
-    fill(0);
-    noStroke();
-    textSize(label.size);
-    textAlign(CENTER);
+    textSize(label.size); // Set size for this label
     
     if (label.isTitle) {
       push();
       translate(label.x, label.y);
       rotate(label.rotation);
       text(label.text, 0, 0);
-      // Add decorative line under title
-      stroke(0);
-      strokeWeight(1);
+      // Add decorative line under title (keep this as a line)
+      strokeWeight(1); // Use slightly thicker weight for the line itself
       line(-textWidth(label.text)/2, 10, textWidth(label.text)/2, 10);
+      strokeWeight(0.5); // Reset to text stroke weight
       pop();
     } else if (label.isBottom) {
       text(label.text, label.x, label.y);
-    } else {
+    } else { // Section labels
       push();
       translate(label.x, label.y);
       rotate(label.rotation);
-      textAlign(CENTER);
       text(label.text, 0, 0);
       pop();
     }
   }
   
-  // Add decorative elements in corners
+  // Add decorative elements in corners (keep as lines)
+  stroke(0);
+  strokeWeight(1);
+  noFill();
   drawDecorativeCorners();
 }
 

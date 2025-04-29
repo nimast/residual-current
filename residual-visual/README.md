@@ -92,6 +92,28 @@ Use these colors in your p5.js sketches for best results.
 
 The e-ink display has a resolution of 1200x1600. Use a canvas size of 600x800 for a 1:2 scale preview.
 
+## Deployment to GitHub Pages
+
+This project can be deployed as a static website using GitHub Pages.
+
+1.  **Push Code:** Ensure your latest code (including the `app/`, `lib/`, and `sketches/` directories) is pushed to your GitHub repository.
+2.  **Configure Pages:**
+    *   Go to your repository settings on GitHub.
+    *   Navigate to the "Pages" section.
+    *   Under "Build and deployment", select "Deploy from a branch".
+    *   Choose the branch you want to deploy (e.g., `main`).
+    *   Select the folder as `/ (root)`.
+    *   Click "Save".
+3.  **Access Site:** GitHub will build and deploy your site. The URL will be available in the Pages settings (e.g., `https://<your-username>.github.io/<repository-name>/`).
+
+**GitHub Pages Limitations:**
+
+*   **Static Only:** The Node.js server (`server.js`) does not run.
+*   **No Live Reload:** Changes pushed to GitHub need to be redeployed by GitHub Pages; there's no automatic browser refresh like with the local server.
+*   **E-ink Export Disabled:** The "Export e-ink" functionality will not work as it requires the server-side build script.
+*   **SVG Export:** The client-side SVG export should work as expected.
+*   **Path Issues:** If sketches or libraries fail to load, you may need to adjust the paths in `app/index.html` to be relative (e.g., change `/lib/p5.min.js` to `lib/p5.min.js`).
+
 ## Development
 
 ### Project Structure

@@ -54,6 +54,19 @@ function loadSketch(filename) {
   sketchContainer.appendChild(iframe);
   console.log('[Main] Iframe element created and appended.');
   
+  // --- Check for seed in URL --- 
+  const urlParams = new URLSearchParams(window.location.search);
+  const urlSeed = urlParams.get('seed');
+  let seedScript = '';
+  if (urlSeed && !isNaN(parseInt(urlSeed, 10))) {
+      const seedValue = parseInt(urlSeed, 10);
+      console.log(`[Main] Found seed in URL: ${seedValue}`);
+      seedScript = `<script>window.initialSeed = ${seedValue}; console.log('[Iframe] Initial seed set from URL:', window.initialSeed);</script>`;
+  } else if (urlSeed) {
+      console.warn(`[Main] Ignoring invalid seed parameter: ${urlSeed}`);
+  }
+  // --- End seed check ---
+
   // Create a simple HTML document with p5.js and the sketch
   const iframeContent = `
     <!DOCTYPE html>
@@ -61,6 +74,7 @@ function loadSketch(filename) {
     <head>
       <script src="/lib/p5.min.js"></script>
       <script src="/lib/p5.svg.js"></script>
+      ${seedScript}
       <script>
         console.log('[Iframe] Script block started.');
         // --- SVG Export Listener ---

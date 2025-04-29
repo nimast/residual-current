@@ -42,7 +42,7 @@ void setup() {
     Paint_SelectImage(Image);
     Paint_Clear(WHITE);
 
-#if 0 // show bmp
+#if 1 // show bmp
     printf("show bmp1-----------------\r\n");
     EPD_13IN3E_DisplayPart(BMP_1, 400, 500, 400, 600);
     DEV_Delay_ms(3000);
