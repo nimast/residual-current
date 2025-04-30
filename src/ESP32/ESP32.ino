@@ -61,7 +61,7 @@ unsigned long currentDisplayUpdateInterval = 90000; // Default, will be randomiz
 #define SIMULATE_ADS true // Set to false when using the real ADS1115
 
 // --- Clear Mode ---
-#define CLEAR_MODE true // Set to true to clear display once and halt
+//#define CLEAR_MODE false // Set to true to clear display once and halt
 
 #if SIMULATE_ADS
 float simTime = 0.0;
@@ -106,7 +106,8 @@ void setup()
     Debug("Powering Down Module...\r\n");
     DEV_Module_Exit();
     Debug("Clear Mode complete. Halting execution.\r\n");
-    noLoop(); // Stop the loop() function from running
+    while(1); // Busy wait to halt execution
+    Debug("*** ERROR: Execution continued past while(1) in CLEAR_MODE! ***\r\n"); // This should never appear
 
     #else
     // --- Normal Visualization Logic ---
@@ -174,8 +175,10 @@ void setup()
     filledRowCount = 0;
 
     Debug("Displaying Initial Blank Screen...\r\n");
+    // Use factory-approved sequence for clearing the screen
+    memset(Image, 0, IMAGE_BUFFER_SIZE); // Zero out buffer first
     EPD_13IN3E_Display(Image); // Show the cleared buffer on the display
-    DEV_Delay_ms(1000);        // Allow time for display update
+    DEV_Delay_ms(1000); // Allow time for display update
 
     Debug("Setup Complete. Entering Loop.\r\n");
 
@@ -188,13 +191,17 @@ void setup()
     // #if 1 // show bmp ... #endif
     // Debug("Clear..."); ...
     EPD_13IN3E_Sleep();
-    DEV_Module_Exit();
+    //DEV_Module_Exit();
 
     #endif // CLEAR_MODE
 }
 
 void loop()
 {
+#ifdef CLEAR_MODE
+    return; // Do nothing in loop if clear mode is active
+#endif
+
     handleScreenReset();
 
     float currentValue = readSensorValue();
@@ -290,7 +297,6 @@ void updateAndCheckChangeDetection(float currentValue) {
     lastAverage = avgValue; // Keep track of the last average regardless
 
     // --- Debug Print ---
-    // Simplified debug print - removed StdDev, Base, Chg, Thresh, Stable, BaseEst
     Serial.printf("V: %.2f, Avg: %.2f\r\n", 
                   currentValue, avgValue);
 }
@@ -307,31 +313,29 @@ void handlePeriodicUpdate(float currentValue) {
 
     if (currentTime - lastDisplayUpdateTime >= currentDisplayUpdateInterval)
     {
+        EPD_13IN3E_Init();
+        Debug("re-init after sleep\r\n");
         // Removed filledRowCount check - no longer relevant
         Debug("Periodic display update timer elapsed.\r\n");
         displaySimpleText(currentValue); // Update with simple text
         lastDisplayUpdateTime = currentTime; // Reset the timer *after* the update attempt
         currentDisplayUpdateInterval = random(60000, 120001); // Calculate next random interval
-        Debug("Periodic display update complete. Next interval: %lu ms\r\n", currentDisplayUpdateInterval);
+        Debug("Periodic display update complete. Next interval: %lu ms now going to sleep..\r\n", currentDisplayUpdateInterval);
+        EPD_13IN3E_Sleep();
+        Debug("Sleeping\r\n");
     }
-
-    // Update the full display with the modified buffer
-    Debug("Updating display...\r\n");
-    EPD_13IN3E_Display(Image);
-    lastDisplayUpdateTime = millis();                     // Reset periodic timer after a line draw update
-    currentDisplayUpdateInterval = random(60000, 120001); // Calculate next random interval
-    Debug("Display update complete. Next interval: %lu ms\r\n", currentDisplayUpdateInterval);
 }
 
 // Displays the provided value as text in the center of the screen
 void displaySimpleText(float value) {
     Debug("Updating display with simple text: %.2f\r\n", value);
-    Paint_SelectImage(Image);      // Ensure drawing to the correct buffer
-    // Paint_Clear(WHITE);          // Clear the buffer - trying manual clear instead
-    memset(Image, 0xFF, IMAGE_BUFFER_SIZE); // Manually fill buffer with white pattern
+    // First zero the buffer completely to remove any garbage
+    memset(Image, 0, IMAGE_BUFFER_SIZE);
+    // Then use the proper Paint function to clear to white
+    Paint_Clear(WHITE);
 
     // Format the value into a string
-    char valueStr[20]; 
+    char valueStr[20];
     snprintf(valueStr, sizeof(valueStr), "Value: %.2f mV", value);
 
     // Calculate center position (adjust font size as needed)
