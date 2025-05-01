@@ -4,6 +4,7 @@
 #include "ImageData.h"
 
 void setup() {
+    delay(2000);
     Debug("EPD_13IN3E_test Demo\r\n");
     DEV_Module_Init();
 

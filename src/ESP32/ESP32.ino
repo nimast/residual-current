@@ -30,13 +30,13 @@ void setup() {
     //Create a new image cache named IMAGE_BW and fill it with white
     UBYTE *Image;
     UWORD Imagesize = ((EPD_13IN3E_WIDTH % 2 == 0)? (EPD_13IN3E_WIDTH / 2 ): (EPD_13IN3E_WIDTH / 2 + 1)) * EPD_13IN3E_HEIGHT;
-    if((Image = (UBYTE *)malloc(20000)) == NULL) {
+    if((Image = (UBYTE *)malloc(Imagesize)) == NULL) {
         Debug("Failed to apply for black memory...\r\n");
         DEV_Module_Exit();
         while(1);
     }
     Debug("NewImage:Image\r\n");
-    Paint_NewImage(Image, 200, 200, 0, WHITE);
+    Paint_NewImage(Image, EPD_13IN3E_WIDTH, EPD_13IN3E_HEIGHT, 0, WHITE);
     
     //Select Image
     Paint_SelectImage(Image);
@@ -47,7 +47,7 @@ void setup() {
     EPD_13IN3E_DisplayPart(BMP_1, 400, 500, 400, 600);
     DEV_Delay_ms(3000);
 #else  // Drawing on the image
-    Paint_NewImage(Image, 200, 200, 90, EPD_13IN3E_WHITE);
+    Paint_NewImage(Image, EPD_13IN3E_WIDTH, EPD_13IN3E_HEIGHT, 0, EPD_13IN3E_WHITE);
     Paint_SetScale(6);
     // 1.Select Image
     Debug("SelectImage:Image\r\n");
@@ -76,9 +76,14 @@ void setup() {
     Paint_DrawString_EN(145, 70, "Waveshare", &Font16, EPD_13IN3E_BLUE, EPD_13IN3E_WHITE);
     Paint_DrawString_EN(145, 105, "Waveshare", &Font16, EPD_13IN3E_RED, EPD_13IN3E_WHITE);
     Paint_DrawString_EN(145, 140, "Waveshare", &Font16, EPD_13IN3E_YELLOW, EPD_13IN3E_WHITE);
+    Paint_DrawString_EN(600, 70, "Waveshare", &Font16, EPD_13IN3E_BLUE, EPD_13IN3E_WHITE);
+    Paint_DrawString_EN(400, 70, "Waveshare", &Font16, EPD_13IN3E_BLUE, EPD_13IN3E_WHITE);
+    Paint_DrawString_EN(400, 400, "Waveshare", &Font16, EPD_13IN3E_BLUE, EPD_13IN3E_WHITE);
+    Paint_DrawString_EN(400, 800, "Waveshare", &Font16, EPD_13IN3E_BLUE, EPD_13IN3E_WHITE);
+    Paint_DrawString_EN(1000, 1000, "Waveshare", &Font16, EPD_13IN3E_BLUE, EPD_13IN3E_WHITE);
 
     Debug("EPD_Display\r\n");
-    EPD_13IN3E_DisplayPart(Image, 1000, 0, 200, 200);
+    EPD_13IN3E_Display(Image);
     DEV_Delay_ms(3000);
 #endif
 
