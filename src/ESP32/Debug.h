@@ -18,9 +18,9 @@
 
 #define USE_DEBUG 1
 #if USE_DEBUG
-	#define Debug(__info) Serial.print(__info)
+	#define Debug(__info, ...) Serial.printf(__info, ##__VA_ARGS__)
 #else
-	#define Debug(__info)  
+	#define Debug(__info, ...)
 #endif
 
 #endif

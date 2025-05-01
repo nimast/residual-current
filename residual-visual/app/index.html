@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Residual Visual - p5.js to e-ink</title>
+  <link rel="stylesheet" href="css/style.css">
+  <!-- p5.js libraries -->
+  <script src="/lib/p5.min.js"></script>
+  <!-- p5.js-svg for SVG export -->
+  <script src="/lib/p5.svg.js"></script>
+  <!-- Socket.io for live reload -->
+  <script src="/socket.io/socket.io.js"></script>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Residual Visual</h1>
+      <div class="actions">
+        <button id="export-svg">Export SVG</button>
+        <button id="export-eink">Export e-ink</button>
+      </div>
+    </header>
+    <main>
+      <div id="sketch-container"></div>
+      <div id="info-panel">
+        <div id="status">Watching for changes...</div>
+        <pre id="dimensions">Width: 0px, Height: 0px</pre>
+      </div>
+    </main>
+  </div>
+
+  <!-- Main script that loads the current sketch and handles live reload -->
+  <script src="js/main.js"></script>
+</body>
+</html> 
