@@ -1,0 +1,23 @@
+{
+  "name": "residual-visual",
+  "version": "0.1.0",
+  "description": "Visual programming environment for e-ink displays",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "build:svg": "node src/build-svg.js",
+    "build:eink": "node src/build-eink.js"
+  },
+  "dependencies": {
+    "acorn": "^8.10.0",
+    "acorn-walk": "^8.2.0",
+    "chokidar": "^3.5.3",
+    "express": "^4.18.2",
+    "jsdom": "^22.1.0",
+    "p5": "^1.8.0",
+    "p5-svg": "^1.5.3",
+    "socket.io": "^4.7.2"
+  },
+  "author": "",
+  "license": "MIT"
+}

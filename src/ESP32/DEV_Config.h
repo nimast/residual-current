@@ -46,14 +46,14 @@
 /**
  * GPIO config
 **/
-#define EPD_SCK_PIN     13
-#define EPD_MOSI_PIN    14
-#define EPD_CS_M_PIN    15
-#define EPD_CS_S_PIN    2
-#define EPD_RST_PIN     26
-#define EPD_DC_PIN      27
-#define EPD_BUSY_PIN    25
-#define EPD_PWR_PIN     33
+#define EPD_SCK_PIN     13  // D13 (SCK)
+#define EPD_MOSI_PIN    11  // D11 (MOSI)
+#define EPD_CS_M_PIN    10  // D10 (CS for master)
+#define EPD_CS_S_PIN    9   // D9 (CS for slave)
+#define EPD_RST_PIN     8   // D8
+#define EPD_DC_PIN      7   // D7
+#define EPD_BUSY_PIN    6   // D6
+#define EPD_PWR_PIN     5   // D5
 
 
 
