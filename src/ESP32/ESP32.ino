@@ -21,8 +21,8 @@
  */
 
 // ADS1115 & I2C Settings
-#define I2C_SDA 6           // Using GPIO6 for SDA
-#define I2C_SCL 7           // Using GPIO7 for SCL
+#define I2C_SDA D3           // Using GPIO6 for SDA
+#define I2C_SCL D4           // Using GPIO7 for SCL
 TwoWire s3i2c = TwoWire(0); // Use I2C bus 0
 Adafruit_ADS1115 ads;
 float V_MULTIPLIER = 0.1875F; // ADS1115 @ +/- 6.144V gain (16-bit results)
