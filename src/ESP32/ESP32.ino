@@ -1,5 +1,9 @@
 #include <Adafruit_ADS1X15.h>
 #include <Wire.h> // Needed for I2C
+#include <esp_heap_caps.h> // For PSRAM allocation
+#include <esp_task_wdt.h> // For watchdog timer management
+
+// Include e-ink display libraries
 #include "EPD_13in3e.h"
 #include "GUI_Paint.h"
 #include "fonts.h"
@@ -46,7 +50,9 @@ float historicalMin = 99999.0;
 float historicalMax = -99999.0;
 
 // E-Ink Image Buffer & Row Tracking
-UBYTE *Image = NULL; // Pointer for the image buffer
+UBYTE *Image = NULL;      // Pointer for the full-screen image buffer
+UBYTE *TextImage = NULL;  // Pointer for the small text image buffer (preallocated)
+uint16_t TextImageSize = 20000; // Original demo uses this exact size
 // EPD_13IN3E_WIDTH = 960, EPD_13IN3E_HEIGHT = 672
 // Size calculation: (Width / 2 pixels per byte) * Height
 const UWORD IMAGE_BUFFER_SIZE = ((EPD_13IN3E_WIDTH / 2) * EPD_13IN3E_HEIGHT);
@@ -56,12 +62,15 @@ int filledRowCount = 0;
 // Periodic Update Timer
 unsigned long lastDisplayUpdateTime = 0;
 unsigned long currentDisplayUpdateInterval = 90000; // Default, will be randomized
+unsigned long lastUpdateAttemptTime = 0; // Track when we last tried (even if it crashed)
+const unsigned long MIN_RETRY_INTERVAL = 30000; // Don't retry for at least 30 seconds after a potential crash
+bool lastUpdateSucceeded = true; // Assume first update will succeed
 
 // --- Simulation Mode ---
-#define SIMULATE_ADS true // Set to false when using the real ADS1115
+#define SIMULATE_ADS false // Set to false when using the real ADS1115
 
 // --- Clear Mode ---
-//#define CLEAR_MODE false // Set to true to clear display once and halt
+// #define CLEAR_MODE false // Set to true to clear display once and halt
 
 #if SIMULATE_ADS
 float simTime = 0.0;
@@ -85,26 +94,99 @@ float readSensorValue();
 void updateAndCheckChangeDetection(float currentValue);
 void handlePeriodicUpdate(float currentValue);
 
+// Enable PSRAM support
+#if CONFIG_IDF_TARGET_ESP32S3
+  #define USE_PSRAM true
+#else
+  #define USE_PSRAM false
+#endif
+
+// Watchdog configuration
+#define WDT_TIMEOUT 30  // Watchdog timeout in seconds
+#define MAX_BUSY_WAIT 25000 // Maximum time in ms to wait for e-paper busy states
+
 void setup()
 {
     Serial.begin(115200); // Use a faster baud rate
-    while (!Serial)
-        ;                      // Wait for serial connection
+    while (!Serial);
+
+    // Configure and start Watchdog Timer
+    Debug("Configuring watchdog timer...\r\n");
+    esp_task_wdt_init(WDT_TIMEOUT, true); // Enable panic on timeout
+    esp_task_wdt_add(NULL); // Add current thread to WDT watch
+    Debug("Watchdog started with %d second timeout\r\n", WDT_TIMEOUT);
+
+    // Print all configuration flags
+    Debug("====== CONFIGURATION FLAGS ======\r\n");
+    #ifdef CLEAR_MODE
+    Debug("CLEAR_MODE: defined\r\n");
+    #else
+    Debug("CLEAR_MODE: not defined\r\n");
+    #endif
+
+    #if SIMULATE_ADS
+    Debug("SIMULATE_ADS: true\r\n");
+    #else
+    Debug("SIMULATE_ADS: false\r\n");
+    #endif
+
+    #if USE_PSRAM
+    Debug("USE_PSRAM: true\r\n");
+    #else
+    Debug("USE_PSRAM: false\r\n");
+    #endif
+
+    Debug("IMAGE_BUFFER_SIZE: %d bytes\r\n", IMAGE_BUFFER_SIZE);
+    Debug("EPD_13IN3E_WIDTH: %d px\r\n", EPD_13IN3E_WIDTH);
+    Debug("EPD_13IN3E_HEIGHT: %d px\r\n", EPD_13IN3E_HEIGHT);
+    Debug("UPDATE_INTERVAL: %d-%d seconds\r\n", 60, 120);
+    Debug("================================\r\n");
+
+    #if USE_PSRAM
+    // Check if PSRAM is enabled
+    if (psramInit()) {
+        Debug("PSRAM is enabled and available\r\n");
+        Debug("Total PSRAM: %d bytes\r\n", ESP.getPsramSize());
+        Debug("Free PSRAM: %d bytes\r\n", ESP.getFreePsram());
+    } else {
+        Debug("PSRAM is not available. Falling back to regular memory\r\n");
+    }
+    #endif
 
     #ifdef CLEAR_MODE
     // --- Clear Mode Logic ---
     Debug("Entering Clear Mode...\r\n");
     Debug("Initializing E-Paper Module...\r\n");
+    Debug("Before DEV_Module_Init()...\r\n");
     DEV_Module_Init();
+    Debug("After DEV_Module_Init()...\r\n");
+    esp_task_wdt_reset(); // Feed watchdog
+    delay(100);
     Debug("Initializing E-Paper Display...\r\n");
+    Debug("Before EPD_13IN3E_Init()...\r\n");
     EPD_13IN3E_Init();
-    Debug("Clearing Display...\r\n");
+    Debug("After EPD_13IN3E_Init()...\r\n");
+    esp_task_wdt_reset(); // Feed watchdog
+    delay(500); // Give some time for initialization to settle
+    Debug("Before EPD_13IN3E_Clear()...\r\n");
     EPD_13IN3E_Clear(EPD_13IN3E_WHITE); // Clear display physically
-    DEV_Delay_ms(500); // Give time for clear command
-    Debug("Putting Display to Sleep...\r\n");
-    EPD_13IN3E_Sleep();
-    Debug("Powering Down Module...\r\n");
-    DEV_Module_Exit();
+    Debug("After sending clear command...\r\n");
+    esp_task_wdt_reset(); // Feed watchdog
+    Debug("Waiting for clear operation to complete (with timeout)...\r\n");
+    unsigned long clearStartTime = millis();
+    bool clearTimedOut = false;
+    while (DEV_Digital_Read(EPD_BUSY_PIN) == 0) {
+        esp_task_wdt_reset();
+        if (millis() - clearStartTime > MAX_BUSY_WAIT) {
+            Debug("Clear operation TIMED OUT after %d ms!\r\n", MAX_BUSY_WAIT);
+            clearTimedOut = true;
+            break;
+        }
+        delay(100);
+    }
+    Debug("After EPD_13IN3E_Clear()...\r\n");
+    esp_task_wdt_reset(); // Feed watchdog
+    delay(1000); // Longer delay after clear
     Debug("Clear Mode complete. Halting execution.\r\n");
     while(1); // Busy wait to halt execution
     Debug("*** ERROR: Execution continued past while(1) in CLEAR_MODE! ***\r\n"); // This should never appear
@@ -145,26 +227,73 @@ void setup()
 
     // --- Initialize E-Ink ---
     Debug("Initializing E-Paper Module...\r\n");
+    Debug("Before DEV_Module_Init()...\r\n");
     DEV_Module_Init(); // Initializes GPIOs based on EPD_Driver.h pins
+    Debug("After DEV_Module_Init()...\r\n");
+    esp_task_wdt_reset(); // Feed watchdog
+    delay(100);
 
     Debug("Initializing E-Paper Display...\r\n");
+    Debug("Before EPD_13IN3E_Init()...\r\n");
     EPD_13IN3E_Init();
+    Debug("After EPD_13IN3E_Init()...\r\n");
+    esp_task_wdt_reset(); // Feed watchdog
+    delay(500); // Give some time for initialization to settle
+
+    Debug("Before EPD_13IN3E_Clear()...\r\n");
     EPD_13IN3E_Clear(EPD_13IN3E_WHITE); // Clear display physically
-    DEV_Delay_ms(500);
+    Debug("After EPD_13IN3E_Clear()...\r\n");
+    esp_task_wdt_reset(); // Feed watchdog
+    delay(1000); // Longer delay after clear
 
     // --- Create and Initialize Image Buffer ---
     Debug("Allocating Image Buffer...\r\n");
-    if ((Image = (UBYTE *)malloc(IMAGE_BUFFER_SIZE)) == NULL)
-    {
+    Debug("IMAGE_BUFFER_SIZE: %d bytes (calculated)\r\n", IMAGE_BUFFER_SIZE);
+    uint32_t maxPsramToUse = ESP.getFreePsram() - 100000; // Leave 100KB safety margin
+    Debug("Maximum safe PSRAM to use: %d bytes\r\n", maxPsramToUse);
+
+    #if USE_PSRAM
+    Debug("Using PSRAM for image buffer allocation\r\n");
+    if((Image = (UBYTE *)heap_caps_malloc(IMAGE_BUFFER_SIZE, MALLOC_CAP_SPIRAM)) == NULL) {
+    #else
+    Debug("Using standard memory for image buffer allocation\r\n");
+    if((Image = (UBYTE *)malloc(IMAGE_BUFFER_SIZE)) == NULL) {
+    #endif
         Debug("Failed to allocate memory for image buffer! Halting.\r\n");
         // Consider DEV_Module_Exit(); ?
         while (1)
             ;
     }
     Debug("Image Buffer Allocated. Size: %d bytes\r\n", IMAGE_BUFFER_SIZE);
+    Debug("Image Buffer Address: 0x%08X\r\n", (uint32_t)Image);
+    Debug("Before Paint_NewImage()...\r\n");
     Paint_NewImage(Image, EPD_13IN3E_WIDTH, EPD_13IN3E_HEIGHT, 0, WHITE); // Set buffer dimensions and default rotation/color
+    Debug("After Paint_NewImage()...\r\n");
+    Debug("Before Paint_SelectImage()...\r\n");
     Paint_SelectImage(Image);                                             // Point drawing functions to this buffer
+    Debug("After Paint_SelectImage()...\r\n");
+    Debug("Before Paint_SetRotate()...\r\n");
+    Paint_SetRotate(ROTATE_90); // Apply rotation to match physical display orientation
+    Debug("After Paint_SetRotate()...\r\n");
+    Debug("Before Paint_Clear()...\r\n");
     Paint_Clear(WHITE);                                                   // Fill the buffer with white
+    Debug("After Paint_Clear()...\r\n");
+
+    // --- Pre-allocate the text buffer to avoid memory allocation during updates ---
+    Debug("Pre-allocating text buffer...\r\n");
+    #if USE_PSRAM
+    Debug("Using PSRAM for text canvas allocation\r\n");
+    if((TextImage = (UBYTE *)heap_caps_malloc(TextImageSize, MALLOC_CAP_SPIRAM)) == NULL) {
+    #else
+    Debug("Using standard memory for text canvas allocation\r\n");
+    if((TextImage = (UBYTE *)malloc(TextImageSize)) == NULL) {
+    #endif
+        Debug("Failed to allocate text image buffer! Continuing without text display.\r\n");
+        // Continue without text capability but don't halt
+    } else {
+        Debug("Text Buffer Allocated. Size: %d bytes\r\n", TextImageSize);
+        Debug("Text Buffer Address: 0x%08X\r\n", (uint32_t)TextImage);
+    }
 
     // --- Initialize Row Tracking ---
     Debug("Initializing Row Tracking...\r\n");
@@ -176,7 +305,7 @@ void setup()
 
     Debug("Displaying Initial Blank Screen...\r\n");
     // Use factory-approved sequence for clearing the screen
-    memset(Image, 0, IMAGE_BUFFER_SIZE); // Zero out buffer first
+    // Don't touch the large buffer
     EPD_13IN3E_Display(Image); // Show the cleared buffer on the display
     DEV_Delay_ms(1000); // Allow time for display update
 
@@ -302,58 +431,118 @@ void updateAndCheckChangeDetection(float currentValue) {
 }
 
 void handlePeriodicUpdate(float currentValue) {
+    esp_task_wdt_reset(); // Feed watchdog
     unsigned long currentTime = millis();
     unsigned long elapsedTime = currentTime - lastDisplayUpdateTime;
     // Prevent underflow if millis() has rolled over
     unsigned long remainingTimeMs = (elapsedTime > currentDisplayUpdateInterval) ? 0 : currentDisplayUpdateInterval - elapsedTime;
     int remainingSeconds = remainingTimeMs / 1000;
+    unsigned long timeSinceLastAttempt = currentTime - lastUpdateAttemptTime;
+
+    // Safety check - if the previous update attempt was recent and failed, wait longer
+    if (!lastUpdateSucceeded && timeSinceLastAttempt < MIN_RETRY_INTERVAL) {
+        Debug("Skipping update - last attempt may have crashed, waiting %d more seconds before retry\r\n", 
+              (MIN_RETRY_INTERVAL - timeSinceLastAttempt) / 1000);
+        return;
+    }
 
     // Optional: Print remaining time here instead of main change detection print?
     // Serial.printf("RefreshIn: %d s\r\n", remainingSeconds);
 
     if (currentTime - lastDisplayUpdateTime >= currentDisplayUpdateInterval)
     {
+        lastUpdateAttemptTime = currentTime; // Mark when we're attempting this update
+        lastUpdateSucceeded = false; // Set to false now, will be set to true if this completes
+
+        esp_task_wdt_reset(); // Feed watchdog
+        // Removed filledRowCount check - no longer relevant
         EPD_13IN3E_Init();
         Debug("re-init after sleep\r\n");
-        // Removed filledRowCount check - no longer relevant
+        esp_task_wdt_reset(); // Feed watchdog
         Debug("Periodic display update timer elapsed.\r\n");
         displaySimpleText(currentValue); // Update with simple text
         lastDisplayUpdateTime = currentTime; // Reset the timer *after* the update attempt
         currentDisplayUpdateInterval = random(60000, 120001); // Calculate next random interval
         Debug("Periodic display update complete. Next interval: %lu ms now going to sleep..\r\n", currentDisplayUpdateInterval);
+        esp_task_wdt_reset(); // Feed watchdog
         EPD_13IN3E_Sleep();
         Debug("Sleeping\r\n");
+        lastUpdateSucceeded = true; // If we got here, update succeeded
     }
+    esp_task_wdt_reset(); // Feed watchdog
 }
 
 // Displays the provided value as text in the center of the screen
 void displaySimpleText(float value) {
     Debug("Updating display with simple text: %.2f\r\n", value);
-    // First zero the buffer completely to remove any garbage
-    memset(Image, 0, IMAGE_BUFFER_SIZE);
-    // Then use the proper Paint function to clear to white
+    esp_task_wdt_reset(); // Feed watchdog
+
+    // Check if we have the pre-allocated text buffer
+    if (TextImage == NULL) {
+        Debug("No text buffer available, skipping text display\r\n");
+        return;
+    }
+    Debug("Using pre-allocated text buffer at address: 0x%08X\r\n", (uint32_t)TextImage);
+    
+    // Match the exact initialization from the demo
+    Debug("Creating small text image buffer\r\n");
+    Debug("Before Paint_NewImage()...\r\n");
+    Paint_NewImage(TextImage, 200, 200, 0, WHITE);
+    Debug("After Paint_NewImage()...\r\n");
+    Debug("Before Paint_SelectImage()...\r\n");
+    Paint_SelectImage(TextImage);
+    Debug("After Paint_SelectImage()...\r\n");
+    Debug("Before Paint_SetRotate()...\r\n");
+    Paint_SetRotate(ROTATE_90); // Add rotation to match physical display orientation
+    Debug("After Paint_SetRotate()...\r\n");
+    Debug("Before Paint_Clear()...\r\n");
     Paint_Clear(WHITE);
-
-    // Format the value into a string
-    char valueStr[20];
+    Debug("After Paint_Clear()...\r\n");
+    
+    // Simple drawing similar to the demo
+    char valueStr[32];
     snprintf(valueStr, sizeof(valueStr), "Value: %.2f mV", value);
+    Debug("Value string created: %s\r\n", valueStr);
+    
+    // Add basic drawings from the demo
+    Debug("Drawing test points...\r\n");
+    Paint_DrawPoint(10, 80, BLACK, DOT_PIXEL_1X1, DOT_STYLE_DFT);
+    Paint_DrawPoint(10, 90, BLACK, DOT_PIXEL_2X2, DOT_STYLE_DFT);
+    Paint_DrawPoint(10, 100, BLACK, DOT_PIXEL_3X3, DOT_STYLE_DFT);
+    
+    // Draw a box
+    Debug("Drawing rectangle...\r\n");
+    Paint_DrawRectangle(20, 70, 70, 120, BLACK, DOT_PIXEL_1X1, DRAW_FILL_EMPTY);
+    
+    // Draw the text
+    Debug("Drawing text...\r\n");
+    Paint_DrawString_EN(30, 30, valueStr, &Font16, BLACK, WHITE);
+    Paint_DrawString_EN(30, 50, "RC Monitor", &Font16, BLACK, WHITE);
+    Debug("All drawing completed.\r\n");
+    
+    // Display at the exact position used in the demo
+    Debug("Displaying part at position (400, 500)\r\n");
+    Debug("Before EPD_13IN3E_DisplayPart()...\r\n");
+    esp_task_wdt_reset(); // Feed watchdog
+    EPD_13IN3E_DisplayPart(TextImage, 400, 500, 200, 200);
 
-    // Calculate center position (adjust font size as needed)
-    // Using Font24 for visibility
-    int textWidth = strlen(valueStr) * Font24.Width;
-    int textHeight = Font24.Height;
-    int centerX = (EPD_13IN3E_WIDTH - textWidth) / 2;
-    int centerY = (EPD_13IN3E_HEIGHT - textHeight) / 2;
+    // Wait for busy with timeout
+    Debug("Waiting for display part operation to complete (with timeout)...\r\n");
+    unsigned long displayStartTime = millis();
+    bool displayTimedOut = false;
+    while (DEV_Digital_Read(EPD_BUSY_PIN) == 0) {
+        esp_task_wdt_reset(); // Feed watchdog
+        if (millis() - displayStartTime > MAX_BUSY_WAIT) {
+            Debug("Display part operation TIMED OUT after %d ms!\r\n", MAX_BUSY_WAIT);
+            displayTimedOut = true;
+            break;
+        }
+        delay(100);
+    }
 
-    // Ensure coordinates are non-negative
-    centerX = max(0, centerX);
-    centerY = max(0, centerY);
-
-    // Draw the string
-    Paint_DrawString_EN(centerX, centerY, valueStr, &Font24, WHITE, BLACK); // Black text on white background
-
-    // Update the display
-    EPD_13IN3E_Display(Image);
+    Debug("After EPD_13IN3E_DisplayPart()...\r\n");
+    esp_task_wdt_reset(); // Feed watchdog
+    
     Debug("Simple text display update command sent.\r\n");
 }
 
