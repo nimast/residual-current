@@ -58,7 +58,7 @@ unsigned long lastDisplayUpdateTime = 0;
 unsigned long currentDisplayUpdateInterval = 90000; // Default, will be randomized
 
 // --- Simulation Mode ---
-#define SIMULATE_ADS true // Set to false when using the real ADS1115
+//#define SIMULATE_ADS true // Set to false when using the real ADS1115
 
 // --- Clear Mode ---
 //#define CLEAR_MODE false // Set to true to clear display once and halt
