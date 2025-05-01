@@ -1,3 +1,28 @@
+/*
+ * ESP32-S3 Residual Current Display
+ * 
+ * This project visualizes residual current on a 13.3" 6-color E-Ink display.
+ * 
+ * MEMORY OPTIMIZATION NOTES:
+ * The ESP32-S3 doesn't have enough RAM to buffer the entire 13.3" e-ink display at once,
+ * which would require around 322,560 bytes (960x672 / 2 bytes per pixel). Instead, we use 
+ * a tile-based approach, where we only allocate memory for one small section (tile) of the
+ * display at a time (200x200 pixels = 20,000 bytes). We update tiles individually
+ * and use EPD_13IN3E_DisplayPart() to send these partial updates to the display.
+ * 
+ * COLOR MAPPING:
+ * The e-paper display supports 6 colors with the following codes:
+ *   - BLACK  (0x0)
+ *   - WHITE  (0x1)
+ *   - YELLOW (0x2)
+ *   - RED    (0x3)
+ *   - BLUE   (0x5)
+ *   - GREEN  (0x6)
+ * 
+ * Each tile visualizes the current value with appropriate colors to ensure
+ * the best visibility on the e-ink display.
+ */
+
 #include <Adafruit_ADS1X15.h>
 #include <Wire.h> // Needed for I2C
 #include "EPD_13in3e.h"
@@ -50,6 +75,22 @@ UBYTE *Image = NULL; // Pointer for the image buffer
 // EPD_13IN3E_WIDTH = 960, EPD_13IN3E_HEIGHT = 672
 // Size calculation: (Width / 2 pixels per byte) * Height
 const UWORD IMAGE_BUFFER_SIZE = ((EPD_13IN3E_WIDTH / 2) * EPD_13IN3E_HEIGHT);
+// Reduced buffer size for partial updates
+// Instead of trying to buffer the entire display (322,560 bytes)
+const UWORD TILE_WIDTH = 200;  // Match the example code's dimensions
+const UWORD TILE_HEIGHT = 200; // Match the example code's dimensions
+// Calculate buffer size for a tile
+const UWORD SMALL_IMAGE_BUFFER_SIZE = 20000; // Same as example code's buffer size
+bool useSmallBuffer = true; // Use the smaller buffer approach
+
+// Define how we divide the screen into tiles
+const int TILES_X = (EPD_13IN3E_WIDTH + TILE_WIDTH - 1) / TILE_WIDTH;   // Ceiling division for X tiles
+const int TILES_Y = (EPD_13IN3E_HEIGHT + TILE_HEIGHT - 1) / TILE_HEIGHT; // Ceiling division for Y tiles
+const int TOTAL_TILES = TILES_X * TILES_Y;
+bool tilesFilled[TILES_X * TILES_Y]; // Track which tiles are filled
+int filledTileCount = 0;
+
+// Row tracking (now used within tiles)
 bool rowsFilled[EPD_13IN3E_HEIGHT];
 int filledRowCount = 0;
 
@@ -75,9 +116,9 @@ float simNoise = 5.0;      // Max random noise in mV
 float calculateAverage();
 float calculateStdDev(float avg);
 bool isSignalStable(float stdDev);
-void HSVtoRGB(float h, float s, float v, uint8_t &r, uint8_t &g, uint8_t &b);
-UBYTE mapRGBtoEinkColor(uint8_t r, uint8_t g, uint8_t b);
 void displaySimpleText(float value);
+void drawEnergyLineInTile(float value, int tileX, int tileY);
+void displayValueInTile(float value, int tileX, int tileY);
 
 // --- Refactored Loop Functions ---
 void handleScreenReset();
@@ -154,25 +195,84 @@ void setup()
 
     // --- Create and Initialize Image Buffer ---
     Debug("Allocating Image Buffer...\r\n");
-    if ((Image = (UBYTE *)malloc(IMAGE_BUFFER_SIZE)) == NULL)
-    {
-        Debug("Failed to allocate memory for image buffer! Halting.\r\n");
-        // Consider DEV_Module_Exit(); ?
-        while (1)
-            ;
-    }
-    Debug("Image Buffer Allocated. Size: %d bytes\r\n", IMAGE_BUFFER_SIZE);
+    if (useSmallBuffer) {
+        // Test with a smaller buffer size for partial updates
+        Debug("Using smaller test buffer of %d bytes for %dx%d area\r\n", 
+              SMALL_IMAGE_BUFFER_SIZE, TILE_WIDTH, TILE_HEIGHT);
+        
+        if ((Image = (UBYTE *)malloc(SMALL_IMAGE_BUFFER_SIZE)) == NULL) {
+            Debug("Failed to allocate memory for small test buffer! Halting.\r\n");
+            while (1);
+        }
+        
+        Debug("Small buffer allocated successfully.\r\n");
+        
+        // Initialize the buffer with white
+        memset(Image, 0xFF, SMALL_IMAGE_BUFFER_SIZE);
+        
+        // Initialize the Paint object with proper dimensions
+        Paint_NewImage(Image, TILE_WIDTH, TILE_HEIGHT, 0, EPD_13IN3E_WHITE);
+        Paint_SelectImage(Image);
+        Paint_Clear(EPD_13IN3E_WHITE);
+        
+        // Draw a test pattern with multiple colors
+        Debug("Drawing test pattern with multiple colors...\r\n");
+        
+        // Draw colored rectangles to test the display's color capabilities
+        const UBYTE colors[] = {
+            EPD_13IN3E_BLACK,
+            EPD_13IN3E_YELLOW,
+            EPD_13IN3E_RED,
+            EPD_13IN3E_BLUE,
+            EPD_13IN3E_GREEN
+        };
+        
+        int rectWidth = TILE_WIDTH / 5;
+        for (int i = 0; i < 5; i++) {
+            Paint_DrawRectangle(i * rectWidth, 0, (i + 1) * rectWidth, TILE_HEIGHT / 2, 
+                               colors[i], DOT_PIXEL_1X1, DRAW_FILL_FULL);
+        }
+        
+        // Draw a checkerboard pattern in the bottom half
+        for (int y = TILE_HEIGHT/2; y < TILE_HEIGHT; y += 20) {
+            for (int x = 0; x < TILE_WIDTH; x += 20) {
+                UBYTE color = ((x + y) / 20) % 2 == 0 ? EPD_13IN3E_BLACK : EPD_13IN3E_WHITE;
+                Paint_DrawRectangle(x, y, x + 19, y + 19, color, DOT_PIXEL_1X1, DRAW_FILL_FULL);
+            }
+        }
+        
+        // Display the partial area
+        Debug("Sending test pattern to display (top-left)...\r\n");
+        EPD_13IN3E_DisplayPart(Image, 0, 0, TILE_WIDTH, TILE_HEIGHT);
+        
+        Debug("Pattern displayed. Now testing text display...\r\n");
+        DEV_Delay_ms(2000);
+        
+        // Now test text display
+        displaySimpleText(123.45);
+    } else {
+        // Original full-buffer approach
+        if ((Image = (UBYTE *)malloc(IMAGE_BUFFER_SIZE)) == NULL) {
+            Debug("Failed to allocate memory for full image buffer! Halting.\r\n");
+            while (1);
+        }
+        Debug("Full Image Buffer Allocated. Size: %d bytes\r\n", IMAGE_BUFFER_SIZE);
     Paint_NewImage(Image, EPD_13IN3E_WIDTH, EPD_13IN3E_HEIGHT, 0, WHITE); // Set buffer dimensions and default rotation/color
     Paint_SelectImage(Image);                                             // Point drawing functions to this buffer
     Paint_Clear(WHITE);                                                   // Fill the buffer with white
+    }
 
-    // --- Initialize Row Tracking ---
-    Debug("Initializing Row Tracking...\r\n");
-    for (int i = 0; i < EPD_13IN3E_HEIGHT; i++)
-    {
+    // --- Initialize Row Tracking and Tile Tracking ---
+    Debug("Initializing Row and Tile Tracking...\r\n");
+    for (int i = 0; i < EPD_13IN3E_HEIGHT; i++) {
         rowsFilled[i] = false;
     }
     filledRowCount = 0;
+    
+    for (int i = 0; i < TOTAL_TILES; i++) {
+        tilesFilled[i] = false;
+    }
+    filledTileCount = 0;
 
     Debug("Displaying Initial Blank Screen...\r\n");
     // Use factory-approved sequence for clearing the screen
@@ -208,9 +308,34 @@ void loop()
 
     updateAndCheckChangeDetection(currentValue);
 
-    // Periodic update is handled separately now, only call if no trigger occurred?
-    // Or allow both potentially?
-    // For now, let periodic update run regardless of trigger.
+    // Find a tile that isn't filled yet and draw to it
+    if (filledTileCount < TOTAL_TILES) {
+        // Find a random unfilled tile
+        int tileIndex;
+        int attempts = 0;
+        do {
+            tileIndex = random(TOTAL_TILES);
+            attempts++;
+        } while (tilesFilled[tileIndex] && attempts < TOTAL_TILES * 2);
+        
+        if (!tilesFilled[tileIndex]) {
+            int tileX = tileIndex % TILES_X;
+            int tileY = tileIndex / TILES_X;
+            
+            Debug("Drawing energy in tile %d,%d (tile %d of %d)\r\n", 
+                  tileX, tileY, filledTileCount + 1, TOTAL_TILES);
+            
+            drawEnergyLineInTile(currentValue, tileX, tileY);
+            tilesFilled[tileIndex] = true;
+            filledTileCount++;
+            
+            // Reset periodic update timer after a tile draw
+            lastDisplayUpdateTime = millis();
+            currentDisplayUpdateInterval = random(60000, 120001);
+        }
+    }
+
+    // Periodic update is still handled separately
     handlePeriodicUpdate(currentValue);
 
     yield(); // Allow background tasks/watchdog
@@ -223,30 +348,27 @@ void loop()
 #ifndef CLEAR_MODE // Don't compile these functions in clear mode
 
 void handleScreenReset() {
-    // --- Check if Screen is Full -> Reset ---
-    if (filledRowCount >= EPD_13IN3E_HEIGHT)
-    {
-        Debug("Screen full. Clearing and restarting visualization.\r\n");
-        Paint_SelectImage(Image); // Ensure drawing happens in the buffer
-        Paint_Clear(WHITE);       // Clear the image buffer
-        EPD_13IN3E_Display(Image); // Update the physical display to blank
+    // --- Check if All Tiles are Full -> Reset ---
+    if (filledTileCount >= TOTAL_TILES) {
+        Debug("All tiles filled. Clearing and restarting visualization.\r\n");
+        
+        // Full clear of the display
+        EPD_13IN3E_Init();
+        EPD_13IN3E_Clear(EPD_13IN3E_WHITE);
 
         // Reset tracking variables
+        filledTileCount = 0;
+        for (int i = 0; i < TOTAL_TILES; i++) {
+            tilesFilled[i] = false;
+        }
+        
         filledRowCount = 0;
         for (int i = 0; i < EPD_13IN3E_HEIGHT; i++) {
             rowsFilled[i] = false;
         }
 
-        // Reset change detection state optionally?
-        // bufferFilled = false; 
-        // baselineEstablished = false; 
-        // currentThreshold = MIN_THRESHOLD;
-        // historicalMin = 99999.0; // Reset historical? Maybe not desirable.
-        // historicalMax = -99999.0;
-
         DEV_Delay_ms(1000); // Pause briefly after clearing
         lastDisplayUpdateTime = millis(); // Reset update timer after clear
-        // No return here, continue the loop
     }
 }
 
@@ -308,53 +430,418 @@ void handlePeriodicUpdate(float currentValue) {
     unsigned long remainingTimeMs = (elapsedTime > currentDisplayUpdateInterval) ? 0 : currentDisplayUpdateInterval - elapsedTime;
     int remainingSeconds = remainingTimeMs / 1000;
 
-    // Optional: Print remaining time here instead of main change detection print?
-    // Serial.printf("RefreshIn: %d s\r\n", remainingSeconds);
-
     if (currentTime - lastDisplayUpdateTime >= currentDisplayUpdateInterval)
     {
-        EPD_13IN3E_Init();
-        Debug("re-init after sleep\r\n");
-        // Removed filledRowCount check - no longer relevant
         Debug("Periodic display update timer elapsed.\r\n");
-        displaySimpleText(currentValue); // Update with simple text
-        lastDisplayUpdateTime = currentTime; // Reset the timer *after* the update attempt
+        
+        // Find a random unfilled tile for the periodic update
+        if (filledTileCount < TOTAL_TILES) {
+            int tileIndex;
+            int attempts = 0;
+            do {
+                tileIndex = random(TOTAL_TILES);
+                attempts++;
+            } while (tilesFilled[tileIndex] && attempts < TOTAL_TILES * 2);
+            
+            if (!tilesFilled[tileIndex]) {
+                int tileX = tileIndex % TILES_X;
+                int tileY = tileIndex / TILES_X;
+                
+                Debug("Periodic update: Using tile %d,%d\r\n", tileX, tileY);
+                
+                // Display the value in this tile
+                displayValueInTile(currentValue, tileX, tileY);
+                
+                // Mark this tile as filled
+                tilesFilled[tileIndex] = true;
+                filledTileCount++;
+            } else {
+                Debug("Could not find unfilled tile for periodic update.\r\n");
+                // Could display in a corner of the screen instead
+            }
+        } else {
+            Debug("All tiles filled, skipping periodic update.\r\n");
+        }
+        
+        lastDisplayUpdateTime = currentTime; // Reset the timer
         currentDisplayUpdateInterval = random(60000, 120001); // Calculate next random interval
-        Debug("Periodic display update complete. Next interval: %lu ms now going to sleep..\r\n", currentDisplayUpdateInterval);
-        EPD_13IN3E_Sleep();
-        Debug("Sleeping\r\n");
+        Debug("Next periodic update in %lu ms\r\n", currentDisplayUpdateInterval);
     }
 }
 
-// Displays the provided value as text in the center of the screen
+// Draws an energy line in a specific tile using the display's color capabilities
+void drawEnergyLineInTile(float value, int tileX, int tileY) {
+    // Validate tile coordinates
+    if (tileX < 0 || tileX >= TILES_X || tileY < 0 || tileY >= TILES_Y) {
+        Debug("Invalid tile coordinates: %d,%d\r\n", tileX, tileY);
+        return;
+    }
+
+    // Calculate tile's position on screen
+    int tileStartX = tileX * TILE_WIDTH;
+    int tileStartY = tileY * TILE_HEIGHT;
+    
+    // Allocate the buffer if not already allocated
+    if (Image == NULL) {
+        if ((Image = (UBYTE *)malloc(SMALL_IMAGE_BUFFER_SIZE)) == NULL) {
+            Debug("Failed to allocate memory for tile buffer! Skipping draw.\r\n");
+            return;
+        }
+    }
+    
+    // Initialize the buffer with white
+    memset(Image, 0xFF, SMALL_IMAGE_BUFFER_SIZE);
+    
+    // Initialize the Paint system for this tile
+    Paint_NewImage(Image, TILE_WIDTH, TILE_HEIGHT, 0, EPD_13IN3E_WHITE);
+    Paint_SelectImage(Image);
+    Paint_Clear(EPD_13IN3E_WHITE);
+    
+    // Find available rows within this tile
+    int tileRowStart = tileY * TILE_HEIGHT;
+    int tileRowEnd = min((int)(tileRowStart + TILE_HEIGHT), EPD_13IN3E_HEIGHT);
+    
+    // Count unfilled rows in this tile
+    int unfilledRowsInTile = 0;
+    for (int y = tileRowStart; y < tileRowEnd; y++) {
+        if (!rowsFilled[y]) {
+            unfilledRowsInTile++;
+        }
+    }
+    
+    // If no unfilled rows, just return (shouldn't happen with proper tracking)
+    if (unfilledRowsInTile == 0) {
+        Debug("No unfilled rows in tile %d,%d\r\n", tileX, tileY);
+        return;
+    }
+    
+    // Pick an unfilled row within this tile
+    int targetRow;
+    int attempts = 0;
+    do {
+        int relativeRow = random(tileRowEnd - tileRowStart);
+        targetRow = tileRowStart + relativeRow;
+        attempts++;
+    } while (rowsFilled[targetRow] && attempts < (tileRowEnd - tileRowStart) * 2);
+    
+    if (rowsFilled[targetRow]) {
+        // If we couldn't find a random unfilled row, find the first available
+        for (targetRow = tileRowStart; targetRow < tileRowEnd; targetRow++) {
+            if (!rowsFilled[targetRow]) break;
+        }
+        if (targetRow == tileRowEnd) {
+            Debug("Could not find any unfilled row in tile! This shouldn't happen.\r\n");
+            return;
+        }
+    }
+    
+    // Final validation check for target row
+    if (targetRow < 0 || targetRow >= EPD_13IN3E_HEIGHT) {
+        Debug("Target row %d is outside the valid display height (0-%d)\r\n", 
+              targetRow, EPD_13IN3E_HEIGHT - 1);
+        return;
+    }
+    
+    // Mark this row as filled
+    rowsFilled[targetRow] = true;
+    filledRowCount++;
+    
+    // Convert the global row position to a local tile row
+    int localTargetRow = targetRow - tileRowStart;
+    
+    // Validate the local row coordinate
+    if (localTargetRow < 0 || localTargetRow >= TILE_HEIGHT) {
+        Debug("Local row %d (from global %d) is outside valid tile height (0-%d)\r\n", 
+              localTargetRow, targetRow, TILE_HEIGHT - 1);
+        return;
+    }
+    
+    Debug("Drawing energy line at row %d (global) / %d (local in tile)\r\n", 
+          targetRow, localTargetRow);
+    
+    // Determine the color set for this energy line based on the value
+    UBYTE lineColor, accentColor, bgColor;
+    
+    // Map value to a color scheme
+    if (value > 100) {
+        lineColor = EPD_13IN3E_RED;      // Red for high values
+        accentColor = EPD_13IN3E_YELLOW; // Yellow accent
+        bgColor = EPD_13IN3E_WHITE;      // White background
+    } else if (value > 50) {
+        lineColor = EPD_13IN3E_YELLOW;   // Yellow for medium-high values
+        accentColor = EPD_13IN3E_RED;    // Red accent
+        bgColor = EPD_13IN3E_WHITE;      // White background
+    } else if (value > 0) {
+        lineColor = EPD_13IN3E_GREEN;    // Green for positive values
+        accentColor = EPD_13IN3E_BLUE;   // Blue accent
+        bgColor = EPD_13IN3E_WHITE;      // White background
+    } else if (value > -50) {
+        lineColor = EPD_13IN3E_BLUE;     // Blue for negative values
+        accentColor = EPD_13IN3E_GREEN;  // Green accent
+        bgColor = EPD_13IN3E_WHITE;      // White background
+    } else {
+        lineColor = EPD_13IN3E_BLACK;    // Black for very negative values
+        accentColor = EPD_13IN3E_BLUE;   // Blue accent
+        bgColor = EPD_13IN3E_WHITE;      // White background
+    }
+    
+    // Draw a horizontal line across the full width using the primary color
+    if (localTargetRow >= 0 && localTargetRow < TILE_HEIGHT) {
+        Paint_DrawLine(0, localTargetRow, TILE_WIDTH, localTargetRow, 
+                      lineColor, DOT_PIXEL_3X3, LINE_STYLE_SOLID);
+    } else {
+        Debug("Cannot draw main line - row %d out of bounds\r\n", localTargetRow);
+        return; // Skip the rest if main line can't be drawn
+    }
+    
+    // Create energy pulse patterns along the line
+    const int numPulses = 5;
+    int pulseSpacing = TILE_WIDTH / numPulses;
+    
+    for (int i = 0; i < numPulses; i++) {
+        int pulseCenter = i * pulseSpacing + pulseSpacing/2;
+        int pulseSize = 8 + abs(value) / 10; // Size based on value magnitude
+        if (pulseSize > 20) pulseSize = 20;  // Cap the maximum pulse size
+        
+        // Ensure the pulse stays within tile boundaries
+        if (pulseCenter - pulseSize >= 0 && pulseCenter + pulseSize < TILE_WIDTH && 
+            localTargetRow - pulseSize >= 0 && localTargetRow + pulseSize < TILE_HEIGHT) {
+            // Draw a circle pulse
+            Paint_DrawCircle(pulseCenter, localTargetRow, pulseSize, 
+                            accentColor, DOT_PIXEL_1X1, DRAW_FILL_FULL);
+            
+            // Add a smaller inner circle with the line color
+            Paint_DrawCircle(pulseCenter, localTargetRow, pulseSize/2, 
+                            lineColor, DOT_PIXEL_1X1, DRAW_FILL_FULL);
+        } else {
+            Debug("Skipping pulse %d - would exceed display boundaries\r\n", i);
+        }
+    }
+    
+    // Draw indicator of value magnitude
+    int valueIndicatorHeight = min(abs(value), 50.0f); // Cap at 50 pixels
+    
+    // Draw a small bar chart on the side of the tile to indicate value
+    if (value >= 0) {
+        // Positive values: bar goes up from the line
+        // Check boundaries
+        if (TILE_WIDTH - 10 >= 0 && TILE_WIDTH - 5 < TILE_WIDTH && 
+            localTargetRow - valueIndicatorHeight >= 0 && localTargetRow < TILE_HEIGHT) {
+            Paint_DrawRectangle(TILE_WIDTH - 10, localTargetRow - valueIndicatorHeight, 
+                              TILE_WIDTH - 5, localTargetRow, 
+                              lineColor, DOT_PIXEL_1X1, DRAW_FILL_FULL);
+        } else {
+            Debug("Exceeding display boundaries for value indicator\r\n");
+        }
+    } else {
+        // Negative values: bar goes down from the line
+        // Check boundaries
+        if (TILE_WIDTH - 10 >= 0 && TILE_WIDTH - 5 < TILE_WIDTH && 
+            localTargetRow >= 0 && localTargetRow + valueIndicatorHeight < TILE_HEIGHT) {
+            Paint_DrawRectangle(TILE_WIDTH - 10, localTargetRow, 
+                              TILE_WIDTH - 5, localTargetRow + valueIndicatorHeight, 
+                              lineColor, DOT_PIXEL_1X1, DRAW_FILL_FULL);
+        } else {
+            Debug("Exceeding display boundaries for value indicator\r\n");
+        }
+    }
+    
+    // Draw amplitude marker lines
+    const int numMarkers = 8;
+    int markerSize = 5;
+    int markerSpacing = TILE_WIDTH / (numMarkers + 1);
+    float amplitude = min(abs(value) / 5, 15.0f); // Cap at 15 pixels
+    
+    for (int i = 1; i <= numMarkers; i++) {
+        int markerX = i * markerSpacing;
+        float offset = sin(i * 0.8) * amplitude; // Sine wave pattern
+        
+        // Check boundaries before drawing markers
+        if (markerX >= 0 && markerX < TILE_WIDTH && 
+            localTargetRow - markerSize >= 0 && localTargetRow + markerSize < TILE_HEIGHT) {
+            // Draw marker lines perpendicular to the main line
+            Paint_DrawLine(markerX, localTargetRow - markerSize, 
+                          markerX, localTargetRow + markerSize, 
+                          accentColor, DOT_PIXEL_1X1, LINE_STYLE_SOLID);
+        } else {
+            Debug("Exceeding display boundaries for marker\r\n");
+        }
+        
+        // Check boundaries for sine wave dots
+        int yOffset = (int)offset;
+        if (markerX >= 0 && markerX < TILE_WIDTH && 
+            localTargetRow + yOffset >= 0 && localTargetRow + yOffset < TILE_HEIGHT) {
+            // Add sine wave effect with smaller dots
+            Paint_DrawPoint(markerX, localTargetRow + yOffset, 
+                           lineColor, DOT_PIXEL_2X2, DOT_FILL_AROUND);
+        }
+    }
+    
+    // Add value indicator text
+    char valueStr[10];
+    sprintf(valueStr, "%.1f", value);
+    // Check boundaries for text
+    if (5 >= 0 && localTargetRow - 12 >= 0 && localTargetRow - 12 + 12 < TILE_HEIGHT) {
+        Paint_DrawString_EN(5, localTargetRow - 12, valueStr, &Font12, 
+                           lineColor, bgColor);
+    } else {
+        Debug("Exceeding display boundaries for text\r\n");
+    }
+    
+    // Display the tile on the e-paper
+    EPD_13IN3E_DisplayPart(Image, tileStartX, tileStartY, TILE_WIDTH, TILE_HEIGHT);
+    
+    // Debug output
+    Debug("Energy line drawn in tile %d,%d at row %d with value %.2f\r\n", 
+          tileX, tileY, localTargetRow, value);
+}
+
+// Displays a value in a specific tile with proper color formatting
+void displayValueInTile(float value, int tileX, int tileY) {
+    // Validate tile coordinates
+    if (tileX < 0 || tileX >= TILES_X || tileY < 0 || tileY >= TILES_Y) {
+        Debug("Invalid tile coordinates: %d,%d\r\n", tileX, tileY);
+        return;
+    }
+    
+    // Calculate tile's position on screen
+    int tileStartX = tileX * TILE_WIDTH;
+    int tileStartY = tileY * TILE_HEIGHT;
+    
+    // Allocate the buffer if not already allocated
+    if (Image == NULL) {
+        if ((Image = (UBYTE *)malloc(SMALL_IMAGE_BUFFER_SIZE)) == NULL) {
+            Debug("Failed to allocate memory for tile buffer! Skipping draw.\r\n");
+            return;
+        }
+    }
+    
+    // Convert value to string
+    char valueStr[30];
+    sprintf(valueStr, "Value: %.2f mV", value);
+    Debug("Displaying in tile %d,%d: %s\r\n", tileX, tileY, valueStr);
+    
+    // Clear buffer with white
+    memset(Image, 0xFF, SMALL_IMAGE_BUFFER_SIZE);
+    
+    // Initialize the Paint system for this tile
+    Paint_NewImage(Image, TILE_WIDTH, TILE_HEIGHT, 0, EPD_13IN3E_WHITE);
+    Paint_SelectImage(Image);
+    //Paint_Clear(EPD_13IN3E_WHITE);
+    
+    // Determine color based on value 
+    UBYTE textColor = EPD_13IN3E_BLACK;  // Default color
+    UBYTE bgColor = EPD_13IN3E_WHITE;    // Default background
+    
+    if (value > 100) {
+        textColor = EPD_13IN3E_RED;      // Red for high values
+        bgColor = EPD_13IN3E_YELLOW;     // Yellow background for emphasis
+    } else if (value < 0) {
+        textColor = EPD_13IN3E_BLUE;     // Blue for negative values
+    } else {
+        textColor = EPD_13IN3E_GREEN;    // Green for normal values
+    }
+    
+    // Draw background
+    Paint_DrawRectangle(0, 0, TILE_WIDTH, TILE_HEIGHT, bgColor, DOT_PIXEL_1X1, DRAW_FILL_FULL);
+    
+    // Draw text - ensure it fits within boundaries
+    // Font24 is approximately 24 pixels tall
+    if (10 >= 0 && 10 + strlen(valueStr) * 12 < TILE_WIDTH && 10 + 24 < TILE_HEIGHT) {
+        Paint_DrawString_EN(10, 10, valueStr, &Font24, textColor, bgColor);
+    } else {
+        // Try with a smaller font if there's not enough room
+        if (10 >= 0 && 10 + strlen(valueStr) * 6 < TILE_WIDTH && 10 + 12 < TILE_HEIGHT) {
+            Paint_DrawString_EN(10, 10, valueStr, &Font12, textColor, bgColor);
+        } else {
+            Debug("Text would exceed tile boundaries - skipping text\r\n");
+        }
+    }
+    
+    // Add a visual indicator - circle with radius proportional to value
+    int radius = abs(value) / 2;
+    if (radius > 80) radius = 80;  // Cap the maximum radius
+    if (radius < 10) radius = 10;  // Minimum radius
+    
+    // Check if circle would fit within the tile boundaries
+    int circleX = TILE_WIDTH/2;
+    int circleY = TILE_HEIGHT/2 + 20;
+    if (circleX - radius >= 0 && circleX + radius < TILE_WIDTH &&
+        circleY - radius >= 0 && circleY + radius < TILE_HEIGHT) {
+        Paint_DrawCircle(circleX, circleY, radius, textColor, DOT_PIXEL_1X1, DRAW_FILL_EMPTY);
+    } else {
+        Debug("Circle would exceed tile boundaries - using smaller radius\r\n");
+        // Use a safe radius that fits within the tile
+        int safeRadius = min((int)(min(circleX, TILE_WIDTH - circleX)),
+                            (int)(min(circleY, TILE_HEIGHT - circleY))) - 1;
+        if (safeRadius > 0) {
+            Paint_DrawCircle(circleX, circleY, safeRadius, textColor, DOT_PIXEL_1X1, DRAW_FILL_EMPTY);
+        }
+    }
+    
+    // Add border - only draw if we're within bounds
+    if (TILE_WIDTH > 1 && TILE_HEIGHT > 1) {
+        Paint_DrawRectangle(0, 0, TILE_WIDTH-1, TILE_HEIGHT-1, EPD_13IN3E_BLACK, DOT_PIXEL_1X1, DRAW_FILL_EMPTY);
+    }
+    
+    // Display on the e-paper
+    EPD_13IN3E_DisplayPart(Image, tileStartX, tileStartY, TILE_WIDTH, TILE_HEIGHT);
+}
+
+// Function to display a simple text message with proper color formatting
 void displaySimpleText(float value) {
-    Debug("Updating display with simple text: %.2f\r\n", value);
-    // First zero the buffer completely to remove any garbage
-    memset(Image, 0, IMAGE_BUFFER_SIZE);
-    // Then use the proper Paint function to clear to white
-    Paint_Clear(WHITE);
-
-    // Format the value into a string
-    char valueStr[20];
-    snprintf(valueStr, sizeof(valueStr), "Value: %.2f mV", value);
-
-    // Calculate center position (adjust font size as needed)
-    // Using Font24 for visibility
-    int textWidth = strlen(valueStr) * Font24.Width;
-    int textHeight = Font24.Height;
-    int centerX = (EPD_13IN3E_WIDTH - textWidth) / 2;
-    int centerY = (EPD_13IN3E_HEIGHT - textHeight) / 2;
-
-    // Ensure coordinates are non-negative
-    centerX = max(0, centerX);
-    centerY = max(0, centerY);
-
-    // Draw the string
-    Paint_DrawString_EN(centerX, centerY, valueStr, &Font24, WHITE, BLACK); // Black text on white background
-
-    // Update the display
-    EPD_13IN3E_Display(Image);
-    Debug("Simple text display update command sent.\r\n");
+    if (Image == NULL) {
+        if ((Image = (UBYTE *)malloc(SMALL_IMAGE_BUFFER_SIZE)) == NULL) {
+            Debug("Failed to allocate memory for text buffer! Skipping.\r\n");
+            return;
+        }
+    }
+    
+    // Convert value to string
+    char valueStr[30];
+    sprintf(valueStr, "Value: %.2f mV", value);
+    Debug("Displaying test message: %s\r\n", valueStr);
+    
+    // Clear the buffer with white
+    memset(Image, 0xFF, SMALL_IMAGE_BUFFER_SIZE);
+    
+    // Initialize for painting
+    Paint_NewImage(Image, TILE_WIDTH, TILE_HEIGHT, 0, EPD_13IN3E_WHITE);
+    Paint_SelectImage(Image);
+    Paint_Clear(EPD_13IN3E_WHITE);
+    
+    // Determine color based on value (for demonstration)
+    UBYTE textColor = EPD_13IN3E_BLACK;  // Default color
+    if (value > 100) {
+        textColor = EPD_13IN3E_RED;      // Red for high values
+    } else if (value < 0) {
+        textColor = EPD_13IN3E_BLUE;     // Blue for negative values
+    } else {
+        textColor = EPD_13IN3E_GREEN;    // Green for normal values
+    }
+    
+    // Draw background rectangle
+    if (TILE_WIDTH > 0 && 50 <= TILE_HEIGHT) {
+        Paint_DrawRectangle(0, 0, TILE_WIDTH, 50, EPD_13IN3E_YELLOW, DOT_PIXEL_1X1, DRAW_FILL_FULL);
+    }
+    
+    // Draw text with boundary checking
+    if (10 >= 0 && 10 + 24 <= TILE_HEIGHT && 10 + strlen(valueStr) * 12 <= TILE_WIDTH) {
+        Paint_DrawString_EN(10, 10, valueStr, &Font24, textColor, EPD_13IN3E_YELLOW);
+    } else {
+        Debug("Text would exceed boundaries in displaySimpleText\r\n");
+    }
+    
+    // Draw a border with boundary checking
+    if (TILE_WIDTH > 1 && TILE_HEIGHT > 1) {
+        Paint_DrawRectangle(0, 0, TILE_WIDTH-1, TILE_HEIGHT-1, EPD_13IN3E_BLACK, DOT_PIXEL_1X1, DRAW_FILL_EMPTY);
+    }
+    
+    // Display the partial area
+    EPD_13IN3E_DisplayPart(Image, 0, 0, TILE_WIDTH, TILE_HEIGHT);
+    
+    // Put display to sleep after update
+    EPD_13IN3E_Sleep();
 }
 
 // --- Helper Function Implementations ---
@@ -393,182 +880,5 @@ bool isSignalStable(float stdDev)
 {
     return stdDev < STABILITY_THRESHOLD;
 }
-
-// Placeholder - needs actual HSV to RGB math
-void HSVtoRGB(float h, float s, float v, uint8_t &r, uint8_t &g, uint8_t &b)
-{
-    // Simple approximation for now - replace with proper conversion
-    if (s == 0)
-    {
-        r = g = b = v * 255;
-        return;
-    } // achromatic (grey)
-    h /= 60; // sector 0 to 5
-    int i = floor(h);
-    float f = h - i; // factorial part of h
-    float p = v * (1 - s);
-    float q = v * (1 - s * f);
-    float t = v * (1 - s * (1 - f));
-    v *= 255;
-    p *= 255;
-    q *= 255;
-    t *= 255;
-    switch (i)
-    {
-    case 0:
-        r = v;
-        g = t;
-        b = p;
-        break;
-    case 1:
-        r = q;
-        g = v;
-        b = p;
-        break;
-    case 2:
-        r = p;
-        g = v;
-        b = t;
-        break;
-    case 3:
-        r = p;
-        g = q;
-        b = v;
-        break;
-    case 4:
-        r = t;
-        g = p;
-        b = v;
-        break;
-    default:
-        r = v;
-        g = p;
-        b = q;
-        break; // case 5
-    }
-}
-
-// Placeholder - needs mapping to EPD_13IN3E color constants
-UBYTE mapRGBtoEinkColor(uint8_t r, uint8_t g, uint8_t b)
-{
-    // Define the basic E-Ink colors in RGB
-    // These might need adjustment based on perceived color
-    const uint8_t colors[][3] = {
-        {0, 0, 0},       // BLACK
-        {255, 255, 255}, // WHITE
-        {255, 0, 0},     // RED
-        {0, 0, 255},     // BLUE
-        {0, 255, 0},     // GREEN
-        {255, 255, 0},   // YELLOW
-        // Add Orange if available for EPD_13IN3E? {255, 165, 0} // ORANGE
-        // Add other colors if the display supports them
-    };
-    const UBYTE einkColors[] = {
-        EPD_13IN3E_BLACK,
-        EPD_13IN3E_WHITE,
-        EPD_13IN3E_RED,
-        EPD_13IN3E_BLUE,
-        EPD_13IN3E_GREEN,
-        EPD_13IN3E_YELLOW,
-        // EPD_13IN3E_ORANGE,
-    };
-    const int numColors = sizeof(einkColors) / sizeof(einkColors[0]);
-
-    long minDistSq = -1;
-    int bestColorIndex = 1; // Default to white
-
-    for (int i = 0; i < numColors; ++i)
-    {
-        long dr = (long)r - colors[i][0];
-        long dg = (long)g - colors[i][1];
-        long db = (long)b - colors[i][2];
-        long distSq = dr * dr + dg * dg + db * db;
-
-        if (minDistSq == -1 || distSq < minDistSq)
-        {
-            minDistSq = distSq;
-            bestColorIndex = i;
-        }
-    }
-    return einkColors[bestColorIndex];
-}
-
-// Draws the energy line to the buffer and updates the display
-// void drawEnergyLine(float value)
-// {
-//     if (filledRowCount >= EPD_13IN3E_HEIGHT)
-//     {
-//         Debug("All rows filled.\r\n");
-//         return;
-//     }
-//
-//     // Select a random unfilled row
-//     int y;
-//     int attempts = 0; // Prevent infinite loop if something is wrong
-//     do
-//     {
-//         y = random(EPD_13IN3E_HEIGHT);
-//         attempts++;
-//     } while (rowsFilled[y] && attempts < EPD_13IN3E_HEIGHT * 2);
-//
-//     if (rowsFilled[y])
-//     {
-//         Debug("Could not find an unfilled row!\r\n");
-//         // Maybe find the first available instead?
-//         for (y = 0; y < EPD_13IN3E_HEIGHT; ++y)
-//         {
-//             if (!rowsFilled[y])
-//                 break;
-//         }
-//         if (y == EPD_13IN3E_HEIGHT)
-//             return; // Should not happen if check above is correct
-//     }
-//
-//     rowsFilled[y] = true;
-//     filledRowCount++;
-//     Debug("Drawing line at row %d (%d/%d filled)\r\n", y, filledRowCount, EPD_13IN3E_HEIGHT);
-//
-//     // Calculate base Hue (0-360) based on historical range
-//     float hue = 0;
-//     if (historicalMax > historicalMin && historicalMax != historicalMin)
-//     { // Avoid division by zero
-//         // Map value linearly between min and max to hue range 0-240 (avoiding wrap around magenta for voltage)
-//         hue = map(value, historicalMin, historicalMax, 0, 240);
-//         hue = constrain(hue, 0, 240); // Ensure it stays within the target range
-//     }
-//     else
-//     {
-//         // Default hue if range is zero or invalid (e.g., use middle like green/cyan)
-//         hue = 120;
-//     }
-//
-//     // Draw the line pixel by pixel into the buffer
-//     float halfWidth = EPD_13IN3E_WIDTH / 2.0;
-//     for (int x = 0; x < EPD_13IN3E_WIDTH; ++x)
-//     {
-//         // Calculate saturation falloff (1.0 in center, maybe 0.2 at edges)
-//         float distFromCenter = abs(x - halfWidth);
-//         float saturation = 1.0 - (distFromCenter / halfWidth) * 0.8; // Scale factor controls edge saturation
-//         saturation = constrain(saturation, 0.2, 1.0);
-//
-//         // Calculate RGB color (Value/Brightness is 1.0)
-//         uint8_t r, g, b;
-//         HSVtoRGB(hue, saturation, 1.0, r, g, b);
-//
-//         // Map to the closest available e-ink color
-//         UBYTE einkColor = mapRGBtoEinkColor(r, g, b);
-//
-//         // Set the pixel in the image buffer
-//         // Paint_SetPixel needs the image buffer pointer if not using the global selected one
-//         Paint_SetPixel(x, y, einkColor);
-//     }
-//
-//     // Update the full display with the modified buffer
-//     Debug("Updating display...\r\n");
-//     EPD_13IN3E_Display(Image);
-//     lastDisplayUpdateTime = millis();                     // Reset periodic timer after a line draw update
-//     currentDisplayUpdateInterval = random(60000, 120001); // Calculate next random interval
-//     Debug("Display update complete. Next interval: %lu ms\r\n", currentDisplayUpdateInterval);
-// }
 
 #endif // CLEAR_MODE (End wrap for normal loop and helper functions)
