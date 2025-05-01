@@ -4,6 +4,11 @@
 #include "ImageData.h"
 
 void setup() {
+    Serial.begin(115200);
+    delay(2000);
+    Debug("Started");
+    DEV_Module_Exit();
+    Debug("exited");
     Debug("EPD_13IN3E_test Demo\r\n");
     DEV_Module_Init();
 
