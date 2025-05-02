@@ -4,6 +4,12 @@
 #include "GUI_Paint.h"
 #include "fonts.h"
 #include "ImageData.h"
+#include "MetalCrystalRenderer.h" // Renamed from EPD_Test.h - metal crystal implementation
+
+// --- Mode Flags ---
+#define TEST_MODE_CRYSTAL true  // Set to true to draw test crystal on startup, false for normal operation
+//#define SIMULATE_ADS true     // Set to false when using the real ADS1115
+//#define CLEAR_MODE false      // Set to true to clear display once and halt
 
 /* Pin connections for ESP32-S3-Nano to 13.3inch e-Paper HAT+:
  * e-Paper HAT+ Pin | ESP32-S3-Nano Pin
@@ -47,7 +53,6 @@ float historicalMax = -99999.0;
 
 // E-Ink Image Buffer & Row Tracking
 UBYTE *Image = NULL; // Pointer for the image buffer
-// EPD_13IN3E_WIDTH = 960, EPD_13IN3E_HEIGHT = 672
 // Size calculation: (Width / 2 pixels per byte) * Height
 const UWORD IMAGE_BUFFER_SIZE = ((EPD_13IN3E_WIDTH / 2) * EPD_13IN3E_HEIGHT);
 bool rowsFilled[EPD_13IN3E_HEIGHT];
@@ -153,17 +158,21 @@ void setup()
     DEV_Delay_ms(500);
 
     //Create a new image cache named IMAGE_BW and fill it with white
-    UBYTE *Image;
+    // try to use global image UBYTE *Image;
     UWORD Imagesize = ((EPD_13IN3E_WIDTH % 2 == 0)? (EPD_13IN3E_WIDTH / 2 ): (EPD_13IN3E_WIDTH / 2 + 1)) * EPD_13IN3E_HEIGHT;
+    Debug("Allocating image buffer of size %d bytes...\r\n", Imagesize);
+    
     if((Image = (UBYTE *)malloc(Imagesize)) == NULL) {
         Debug("Failed to apply for black memory...\r\n");
         DEV_Module_Exit();
         while(1);
     }
+    Debug("Successfully allocated image buffer at address %p\r\n", Image);
     Debug("NewImage:Image\r\n");
     Paint_NewImage(Image, EPD_13IN3E_WIDTH, EPD_13IN3E_HEIGHT, 0, WHITE);
     
     //Select Image
+    Debug("Selecting image buffer for initial drawing\r\n");
     Paint_SelectImage(Image);
     Paint_Clear(WHITE);
 
@@ -181,35 +190,42 @@ void setup()
 
     // 2.Drawing on the image
     Debug("Drawing:Image\r\n");
-    Paint_DrawPoint(10, 80, EPD_13IN3E_RED, DOT_PIXEL_1X1, DOT_STYLE_DFT);
-    Paint_DrawPoint(10, 90, EPD_13IN3E_BLUE, DOT_PIXEL_2X2, DOT_STYLE_DFT);
-    Paint_DrawPoint(10, 100, EPD_13IN3E_GREEN, DOT_PIXEL_3X3, DOT_STYLE_DFT);
-    Paint_DrawLine(20, 70, 70, 120, EPD_13IN3E_YELLOW, DOT_PIXEL_1X1, LINE_STYLE_SOLID);
-    Paint_DrawLine(70, 70, 20, 120, EPD_13IN3E_YELLOW, DOT_PIXEL_1X1, LINE_STYLE_SOLID);
-    Paint_DrawRectangle(20, 70, 70, 120, EPD_13IN3E_BLACK, DOT_PIXEL_1X1, DRAW_FILL_EMPTY);
-    Paint_DrawRectangle(80, 70, 130, 120, EPD_13IN3E_BLACK, DOT_PIXEL_1X1, DRAW_FILL_FULL);
-    Paint_DrawCircle(45, 95, 20, EPD_13IN3E_BLACK, DOT_PIXEL_1X1, DRAW_FILL_EMPTY);
-    Paint_DrawCircle(105, 95, 20, EPD_13IN3E_WHITE, DOT_PIXEL_1X1, DRAW_FILL_FULL);
-    Paint_DrawLine(85, 95, 125, 95, EPD_13IN3E_YELLOW, DOT_PIXEL_1X1, LINE_STYLE_DOTTED);
-    Paint_DrawLine(105, 75, 105, 115, EPD_13IN3E_YELLOW, DOT_PIXEL_1X1, LINE_STYLE_DOTTED);
-    Paint_DrawString_CN(10, 130, "你好abc", &Font12CN, EPD_13IN3E_BLACK, EPD_13IN3E_WHITE);
-    Paint_DrawString_CN(10, 150, "微雪电子", &Font24CN, EPD_13IN3E_WHITE, EPD_13IN3E_BLACK);
-    Paint_DrawNum(10, 33, 123456789, &Font12, EPD_13IN3E_BLACK, EPD_13IN3E_WHITE);
-    Paint_DrawNum(10, 50, 987654321, &Font16, EPD_13IN3E_WHITE, EPD_13IN3E_BLACK);
-    Paint_DrawString_EN(145, 0, "Waveshare", &Font16, EPD_13IN3E_BLACK, EPD_13IN3E_WHITE);
-    Paint_DrawString_EN(145, 35, "Waveshare", &Font16, EPD_13IN3E_GREEN, EPD_13IN3E_WHITE);
-    Paint_DrawString_EN(145, 70, "Waveshare", &Font16, EPD_13IN3E_BLUE, EPD_13IN3E_WHITE);
-    Paint_DrawString_EN(145, 105, "Waveshare", &Font16, EPD_13IN3E_RED, EPD_13IN3E_WHITE);
-    Paint_DrawString_EN(145, 140, "Waveshare", &Font16, EPD_13IN3E_YELLOW, EPD_13IN3E_WHITE);
-    Paint_DrawString_EN(600, 70, "Waveshare", &Font16, EPD_13IN3E_BLUE, EPD_13IN3E_WHITE);
-    Paint_DrawString_EN(400, 70, "Waveshare", &Font16, EPD_13IN3E_BLUE, EPD_13IN3E_WHITE);
-    Paint_DrawString_EN(400, 400, "Waveshare", &Font16, EPD_13IN3E_BLUE, EPD_13IN3E_WHITE);
-    Paint_DrawString_EN(400, 800, "Waveshare", &Font16, EPD_13IN3E_BLUE, EPD_13IN3E_WHITE);
-    Paint_DrawString_EN(1000, 1000, "Waveshare", &Font16, EPD_13IN3E_BLUE, EPD_13IN3E_WHITE);
+    
+#if TEST_MODE_CRYSTAL
+    // Test mode - Draw metal crystal instead of text
+    Debug("TEST MODE: Drawing metal crystal on startup\r\n");
+    
+    // Use fixed test values for reliable testing
+    float testValue1 = 25.5;  // First ADS value for testing
+    float testValue2 = 45.8;  // Second ADS value for testing
+    
+    // Initialize ADS buffers with test values
+    for (int i = 0; i < ADS_BUFFER_SIZE; i++) {
+        adsBuffer1.values[i] = testValue1 + ((i % 3) - 1) * 2.5; // Add some variation
+        adsBuffer2.values[i] = testValue2 + ((i % 3) - 1) * 3.8;
+    }
+    adsBuffer1.index = 0;
+    adsBuffer1.filled = true;
+    adsBuffer1.prevUpdateValue = testValue1;
+    adsBuffer1.lastUpdateTime = millis() - 10000; // Pretend last update was 10 seconds ago
+    
+    adsBuffer2.index = 0;
+    adsBuffer2.filled = true;
+    adsBuffer2.prevUpdateValue = testValue2;
+    adsBuffer2.lastUpdateTime = millis() - 10000;
+    
+    Debug("Displaying test crystal with values: %.1f, %.1f\r\n", testValue1, testValue2);
+    displayMetalCrystal(EPD_13IN3E_WIDTH, EPD_13IN3E_HEIGHT, testValue1, testValue2);
+#else
+    // Normal mode - draw the original "Residual Current" text
+    Paint_DrawString_EN(145, 105, "Residual Current", &Font16, EPD_13IN3E_RED, EPD_13IN3E_WHITE);
+#endif
 
     Debug("EPD_Display\r\n");
     EPD_13IN3E_Display(Image);
+    Debug("Initial display complete\r\n");
     DEV_Delay_ms(3000);
+#endif
 #endif
 }
 
@@ -244,6 +260,13 @@ void handleScreenReset() {
     if (filledRowCount >= EPD_13IN3E_HEIGHT)
     {
         Debug("Screen full. Clearing and restarting visualization.\r\n");
+        
+        // Check if Image buffer is valid
+        if (Image == NULL) {
+            Debug("FATAL ERROR: Image buffer is NULL in handleScreenReset!\r\n");
+            return;
+        }
+        
         Paint_SelectImage(Image); // Ensure drawing happens in the buffer
         Paint_Clear(WHITE);       // Clear the image buffer
         EPD_13IN3E_Display(Image); // Update the physical display to blank
@@ -254,16 +277,8 @@ void handleScreenReset() {
             rowsFilled[i] = false;
         }
 
-        // Reset change detection state optionally?
-        // bufferFilled = false; 
-        // baselineEstablished = false; 
-        // currentThreshold = MIN_THRESHOLD;
-        // historicalMin = 99999.0; // Reset historical? Maybe not desirable.
-        // historicalMax = -99999.0;
-
         DEV_Delay_ms(1000); // Pause briefly after clearing
         lastDisplayUpdateTime = millis(); // Reset update timer after clear
-        // No return here, continue the loop
     }
 }
 
@@ -280,6 +295,22 @@ float readSensorValue() {
     float currentValue = simBaseline + sineValue + noiseValue;
 #endif
     return currentValue;
+}
+
+// New function to read second ADS channel
+float readSecondSensorValue() {
+    // --- Read ADS1115 Second Channel ---
+#ifndef SIMULATE_ADS
+    int16_t results2 = ads.readADC_Differential_2_3();
+    float currentValue2 = results2 * V_MULTIPLIER; // Convert to mV
+#else
+    // --- Simulate ADS1115 Second Channel Reading ---
+    // Use different frequency for second channel
+    float sineValue2 = cos(simTime * simFrequency * 0.7) * simAmplitude * 0.8;
+    float noiseValue2 = random(-(simNoise * 80), (simNoise * 80) + 1) / 100.0; // Different noise profile
+    float currentValue2 = simBaseline * 0.9 + sineValue2 + noiseValue2;
+#endif
+    return currentValue2;
 }
 
 void updateAndCheckChangeDetection(float currentValue) {
@@ -330,14 +361,48 @@ void handlePeriodicUpdate(float currentValue) {
 
     if (currentTime - lastDisplayUpdateTime >= currentDisplayUpdateInterval)
     {
+        Debug("Starting periodic display update, free heap: %d\r\n", ESP.getFreeHeap());
+        
         EPD_13IN3E_Init();
-        Debug("re-init after sleep\r\n");
-        // Removed filledRowCount check - no longer relevant
+        Debug("re-init after sleep complete\r\n");
+        
         Debug("Periodic display update timer elapsed.\r\n");
-        displaySimpleText(currentValue); // Update with simple text
-        lastDisplayUpdateTime = currentTime; // Reset the timer *after* the update attempt
-        currentDisplayUpdateInterval = random(60000, 120001); // Calculate next random interval
+        
+        // Check if Image buffer is valid - it should never be NULL since we allocate it in setup
+        if (Image == NULL) {
+            Debug("FATAL ERROR: Image buffer is NULL! This should never happen.\r\n");
+            Debug("Aborting display update. Will try again next cycle.\r\n");
+            return;
+        }
+        
+        // Make sure we're using the same image buffer that was allocated in setup
+        Debug("Selecting image buffer for drawing\r\n");
+        Paint_SelectImage(Image);
+        
+        Debug("Reading second sensor value\r\n");
+        // Read second sensor value
+        float secondValue = readSecondSensorValue();
+        Debug("Sensor values: %.2f, %.2f\r\n", currentValue, secondValue);
+        
+        Debug("Processing ADS buffer values\r\n");
+        // Get averaged/processed values 
+        float processedValue1 = addToADSBuffer(&adsBuffer1, currentValue);
+        float processedValue2 = addToADSBuffer(&adsBuffer2, secondValue);
+        Debug("Processed values: %.2f, %.2f\r\n", processedValue1, processedValue2);
+        
+        Debug("Calling displayMetalCrystal\r\n");
+        // Use metal crystal visualization instead of simple text
+        displayMetalCrystal(EPD_13IN3E_WIDTH, EPD_13IN3E_HEIGHT, processedValue1, processedValue2);
+        
+        Debug("Updating display with EPD_13IN3E_Display\r\n");
+        EPD_13IN3E_Display(Image);
+        Debug("Display update complete\r\n");
+        
+        lastDisplayUpdateTime = millis(); // Reset the timer *after* the update attempt
+        currentDisplayUpdateInterval = random(120000, 180001); // Calculate next random interval
         Debug("Periodic display update complete. Next interval: %lu ms now going to sleep..\r\n", currentDisplayUpdateInterval);
+        
+        Debug("Entering sleep mode, free heap: %d\r\n", ESP.getFreeHeap());
         EPD_13IN3E_Sleep();
         Debug("Sleeping\r\n");
     }
@@ -346,14 +411,24 @@ void handlePeriodicUpdate(float currentValue) {
 // Displays the provided value as text in the center of the screen
 void displaySimpleText(float value) {
     Debug("Updating display with simple text: %.2f\r\n", value);
-    // First zero the buffer completely to remove any garbage
-    memset(Image, 0, IMAGE_BUFFER_SIZE);
-    // Then use the proper Paint function to clear to white
-    Paint_Clear(WHITE);
-
+    
+    // Check if Image buffer is valid
+    if (Image == NULL) {
+        Debug("FATAL ERROR: Image buffer is NULL in displaySimpleText!\r\n");
+        return;
+    }
+    
+    // Make sure we're using the correct image buffer
+    Paint_SelectImage(Image);
+    
+    // Clear the buffer
+    Paint_Clear(EPD_13IN3E_WHITE);
+    Debug("cleared display\r\n");
+    
     // Format the value into a string
     char valueStr[20];
     snprintf(valueStr, sizeof(valueStr), "Value: %.2f mV", value);
+    Debug("generated string\r\n");
 
     // Calculate center position (adjust font size as needed)
     // Using Font24 for visibility
@@ -368,7 +443,8 @@ void displaySimpleText(float value) {
 
     // Draw the string
     Paint_DrawString_EN(centerX, centerY, valueStr, &Font24, WHITE, BLACK); // Black text on white background
-
+    Debug("Drew string, gonna display!\r\n");
+    
     // Update the display
     EPD_13IN3E_Display(Image);
     Debug("Simple text display update command sent.\r\n");
