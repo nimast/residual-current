@@ -92,9 +92,7 @@ void handlePeriodicUpdate(float currentValue);
 
 void setup()
 {
-    Serial.begin(115200); // Use a faster baud rate
-    while (!Serial)
-        ;                      // Wait for serial connection
+    Serial.begin(115200);
 
     #ifdef CLEAR_MODE
     // --- Clear Mode Logic ---
